@@ -1,10 +1,12 @@
-import { Router } from "express";
+import { Router, RequestHandler } from "express";
 import { createOrder, getOrder } from "../controllers/order.controller";
 
 const router = Router();
 
 // Create a new order
-router.post("/orders", createOrder);
+// ensure controller matches Express handler type
+// The double cast (unknown → RequestHandler) is usually used to bypass a type mismatch between the actual function signature and what Express expects.
+router.post("/orders", createOrder as unknown as RequestHandler);
 
 // Get order status
 router.get("/orders/:orderId", getOrder);
