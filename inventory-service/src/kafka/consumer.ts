@@ -18,7 +18,7 @@ export const startConsumer = async () => {
     topic: "payment-events",
     fromBeginning: false,
   });
-
+  
   console.log("👂 Listening on topic: payment-events");
 
   await consumer.run({

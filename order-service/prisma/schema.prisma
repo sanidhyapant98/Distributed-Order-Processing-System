@@ -31,3 +31,18 @@ model Order {
   status    String
   createdAt DateTime @default(now())
 }
+
+model OrderEventOutbox {
+  id              String    @id @default(uuid())
+  orderId         String
+  eventType       String    // e.g., "ORDER_CREATED", "ORDER_UPDATED"
+  eventPayload    Json      // The actual event data to publish
+  createdAt       DateTime  @default(now())
+  publishedAt     DateTime? // NULL = not published yet
+  publishAttempts Int       @default(0)
+  lastError       String?   // Store error message if publishing fails
+  
+  @@index([publishedAt]) // Speed up queries for unpublished events
+  @@index([createdAt])
+  @@map("order_event_outbox")
+}

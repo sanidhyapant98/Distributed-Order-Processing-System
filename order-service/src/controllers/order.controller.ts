@@ -51,7 +51,7 @@ export const createOrder = async (req: Request, res: Response) => {
             }]
         });
 
-        console.log(`📤 Published ORDER_CREATED event to Kafka for order: ${order.id}`);
+        console.log(`� Published ORDER_CREATED event to Kafka for order: ${order.id}`);
         console.log(`⏳ Waiting for payment processing...\n`);
 
         res.status(201).json({
