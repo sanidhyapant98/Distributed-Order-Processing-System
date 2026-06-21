@@ -2,6 +2,7 @@ import 'dotenv/config';
 import app from "./app";
 import { connectProducer } from "./kafka/producer";
 import { startOrderConsumer } from "./kafka/consumer";
+import { startOutboxPoller, stopOutboxPoller } from './kafka/outbox-poller';
 
 const PORT = process.env.PORT || 5000;
 
@@ -17,6 +18,8 @@ const startServer = async () => {
     await startOrderConsumer();
     console.log("✅ Order Service Consumer started - listening for payment events");
 
+    startOutboxPoller();
+
     app.listen(PORT, () => {
       console.log(`\n🎯 Order Service is running on http://localhost:${PORT}`);
       console.log("📤 Producer: Sending order-events to Kafka");
@@ -31,6 +34,7 @@ const startServer = async () => {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down Order Service...');
+  stopOutboxPoller();
   process.exit(0);
 });
 
