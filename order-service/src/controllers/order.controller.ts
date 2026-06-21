@@ -1,10 +1,10 @@
 import { Request, Response } from "express";
-import { producer } from "../kafka/producer";
 import { prisma } from "../prisma";
+import { timeStamp } from "node:console";
 
 export const createOrder = async (req: Request, res: Response) => {
     try {
-        const { userId, productId } = req.body;
+        const { userId, productId }: { userId: string; productId: string } = req.body;
         
         // Validation
         if (!userId || !productId) {
@@ -23,36 +23,41 @@ export const createOrder = async (req: Request, res: Response) => {
             }
         })
         if(!product){
-            return res.status(400).json({error: "❌ Product not found"})
+            res.status(400).json({error: "❌ Product not found"})
+            return;
         }
-        // Create order in database
-        const order = await prisma.order.create({
-            data: {
-                userId,
-                productId,
-                status: "PENDING",
-            }
-        });
+        
+        console.log(`\n📝 Creating order for userId: ${userId}, productId: ${productId}`);
 
-        console.log(`✅ Order created with ID: ${order.id}`);
-
-        // Publish event to Kafka
-        await producer.send({
-            topic: "order-events",
-            messages: [{
-                key: order.id,
-                value: JSON.stringify({
-                    type: "ORDER_CREATED",
-                    orderId: order.id,
+        // THE KEY PART: both writes happen together or not at all
+        // If Kafka is down, no problem — the outbox poller will publish later
+        const { order } = await prisma.$transaction(async (tx) => {
+            // 1. Create the order
+            const order= await tx.order.create({
+                data: {
                     userId,
                     productId,
-                    timestamp: new Date().toISOString(),
-                })
-            }]
+                    status: "PENDING",
+                },
+            }); 
+            // 2. Save the event we want to publish(not published yet)
+            await tx.orderEventOutbox.create({
+                data: {
+                    orderId: order.id,
+                    eventType: "ORDER_CREATED",
+                    eventPayload: {
+                        type: "ORDER_CREATED",
+                        orderId: order.id,
+                        userId,
+                        productId,
+                        timeStamp: new Date().toISOString()
+                    },
+                },
+            });
+            return { order };
         });
 
-        console.log(`� Published ORDER_CREATED event to Kafka for order: ${order.id}`);
-        console.log(`⏳ Waiting for payment processing...\n`);
+        console.log(`✅ Order ${order.id} created. Event saved to outbox.`);
 
         res.status(201).json({
             success: true,
