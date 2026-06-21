@@ -21,7 +21,6 @@ model Product {
   id    String @id @default(uuid())
   name  String
   price Float
-  stock Int
 }
 
 model Order {
