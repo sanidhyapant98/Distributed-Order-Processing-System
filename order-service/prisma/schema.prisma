@@ -45,3 +45,16 @@ model OrderEventOutbox {
   @@index([createdAt])
   @@map("order_event_outbox")
 }
+
+// Tracks which incoming Kafka events this service has already processed.
+// Used to make the payment-events consumer idempotent (safe against
+// duplicate delivery / redelivery from Kafka).
+model ProcessedPaymentEvent { 
+  id String @id
+  eventType String
+  orderId String
+  processedAt DateTime @default(now())
+
+  @@index([orderId])
+  @@map("processed_payment_event")
+}

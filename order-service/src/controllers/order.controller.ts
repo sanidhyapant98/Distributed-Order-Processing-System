@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { prisma } from "../prisma";
-import { timeStamp } from "node:console";
+import { randomUUID } from "node:crypto";
 
 export const createOrder = async (req: Request, res: Response) => {
     try {
@@ -14,9 +14,7 @@ export const createOrder = async (req: Request, res: Response) => {
             });
             return;
         }
-
-        console.log(`\n📝 Creating order for userId: ${userId}, productId: ${productId}`);
-
+        
         const product = await prisma.product.findUnique({
             where: {
                 id: productId
@@ -28,6 +26,11 @@ export const createOrder = async (req: Request, res: Response) => {
         }
         
         console.log(`\n📝 Creating order for userId: ${userId}, productId: ${productId}`);
+
+        // Generate the outbox row's id up front so we can embed it as the
+        // event's unique ID (eventId) inside its own payload. Downstream
+        // consumers use this eventId to detect and skip duplicate deliveries
+        const outboxEventId= randomUUID();
 
         // THE KEY PART: both writes happen together or not at all
         // If Kafka is down, no problem — the outbox poller will publish later
@@ -43,6 +46,7 @@ export const createOrder = async (req: Request, res: Response) => {
             // 2. Save the event we want to publish(not published yet)
             await tx.orderEventOutbox.create({
                 data: {
+                    id: outboxEventId;
                     orderId: order.id,
                     eventType: "ORDER_CREATED",
                     eventPayload: {
