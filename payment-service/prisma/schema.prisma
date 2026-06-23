@@ -1,0 +1,26 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Tracks which incoming Kafka events this service has already processed.
+// Used to make the order-events consumer idempotent (safe against
+// duplicate delivery / redelivery from Kafka).
+model ProcessedOrderEvent{
+  id String @id
+  eventType String
+  orderId String
+  processedAt DateTime @default(now())
+
+  @@index([orderId])
+  @@map("processed_order_event")
+}

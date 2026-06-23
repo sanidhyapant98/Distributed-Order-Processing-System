@@ -13,3 +13,4 @@ coverage/
 /src/generated/prisma
 # output from bundlers
 dist/
+/src/generated/prisma
