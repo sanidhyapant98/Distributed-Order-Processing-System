@@ -46,7 +46,7 @@ export const createOrder = async (req: Request, res: Response) => {
             // 2. Save the event we want to publish(not published yet)
             await tx.orderEventOutbox.create({
                 data: {
-                    id: outboxEventId;
+                    id: outboxEventId,
                     orderId: order.id,
                     eventType: "ORDER_CREATED",
                     eventPayload: {
