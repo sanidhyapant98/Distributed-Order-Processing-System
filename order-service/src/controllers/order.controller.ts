@@ -51,6 +51,7 @@ export const createOrder = async (req: Request, res: Response) => {
                     eventType: "ORDER_CREATED",
                     eventPayload: {
                         type: "ORDER_CREATED",
+                        eventId: outboxEventId,
                         orderId: order.id,
                         userId,
                         productId,

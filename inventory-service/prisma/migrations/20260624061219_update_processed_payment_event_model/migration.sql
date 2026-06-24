@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE "processed_payment_event" ADD COLUMN     "processedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ALTER COLUMN "productId" DROP DEFAULT,
+ALTER COLUMN "productId" SET DATA TYPE TEXT;

@@ -1,8 +1,6 @@
-import { ProcessedOrderEvent } from './../generated/prisma/client';
-const { PrismaClient } = require("@prisma/client");
+import { prisma } from "../prisma";
 import { producer } from "../kafka/producer";
-
-const prisma = new PrismaClient();
+import { randomUUID } from "node:crypto";
 
 export const handlePayment = async (event: any) => {
   const { orderId, userId, productId, eventId } = event;
@@ -25,6 +23,7 @@ export const handlePayment = async (event: any) => {
   try {
     console.log(`\n💳 Processing payment for order: ${orderId}`);
     console.log(`   User: ${userId}, Product: ${productId}`);
+    const paymentEventId = randomUUID();
 
     // Simulate payment processing (random success/failure - 70% success rate)
     const isSuccess = Math.random() > 0.3;
@@ -42,6 +41,7 @@ export const handlePayment = async (event: any) => {
             key: orderId,
             value: JSON.stringify({
               type: "PAYMENT_SUCCESS",
+              eventId: paymentEventId,
               orderId,
               userId,
               productId,
@@ -62,6 +62,7 @@ export const handlePayment = async (event: any) => {
             key: orderId,
             value: JSON.stringify({
               type: "PAYMENT_FAILED",
+              eventId: paymentEventId,
               orderId,
               userId,
               productId,
