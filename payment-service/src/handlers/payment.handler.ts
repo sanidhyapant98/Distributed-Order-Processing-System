@@ -1,7 +1,26 @@
+import { ProcessedOrderEvent } from './../generated/prisma/client';
+const { PrismaClient } = require("@prisma/client");
 import { producer } from "../kafka/producer";
 
+const prisma = new PrismaClient();
+
 export const handlePayment = async (event: any) => {
-  const { orderId, userId, productId } = event;
+  const { orderId, userId, productId, eventId } = event;
+
+  if(!eventId){
+    console.warn("⚠️  Event has no eventId — cannot deduplicate. Processing anyway.");
+  }else{
+    // IDEMPOTENCY CHECK: have we already processed this exact event?
+    const alreadyProcessed= await prisma.processedOrderEvent.findUnique({
+      where: {
+        id: eventId
+      }
+    })
+    if(alreadyProcessed){
+      console.log(`⏭️  Duplicate ORDER_CREATED event detected (eventId: ${eventId}). Skipping — already processed at ${alreadyProcessed.processedAt.toISOString()}`);
+      return;
+    }
+  }
 
   try {
     console.log(`\n💳 Processing payment for order: ${orderId}`);
@@ -54,6 +73,19 @@ export const handlePayment = async (event: any) => {
       });
       
       console.log(`📤 Published PAYMENT_FAILED event to Kafka\n`);
+    }
+
+    // Record that we've handled this incoming ORDER_CREATED event,
+    // so a redelivered copy won't be processed (and charged) again.
+    if(eventId){
+      await prisma.processedOrderEvent.create({
+        data: {
+          id: eventId,
+          eventType: "ORDER_CREATED",
+          orderId,
+        }
+      })
+      console.log(`📌 Marked eventId ${eventId} as processed`);
     }
   } catch (err) {
     console.error("❌ Error handling payment:", err);
