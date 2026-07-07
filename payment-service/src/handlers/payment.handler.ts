@@ -1,116 +1,131 @@
 import { prisma } from "../prisma";
 import { producer } from "../kafka/producer";
 import { randomUUID } from "node:crypto";
+import { withRetry } from "../utils/retry";
+
+const MAX_PUBLISH_RETRIES = 3;
 
 export const handlePayment = async (event: any) => {
   const { orderId, userId, productId, eventId } = event;
 
-  if(!eventId){
-    console.warn("⚠️  Event has no eventId — cannot deduplicate. Processing anyway.");
-  }else{
-    // IDEMPOTENCY CHECK: have we already processed this exact event?
-    const alreadyProcessed= await prisma.processedOrderEvent.findUnique({
-      where: {
-        id: eventId
-      }
-    })
-    if(alreadyProcessed){
-      console.log(`⏭️  Duplicate ORDER_CREATED event detected (eventId: ${eventId}). Skipping — already processed at ${alreadyProcessed.processedAt.toISOString()}`);
-      return;
-    }
-  }
-
   try {
+    if (eventId) {
+      // IDEMPOTENCY CHECK: have we already processed this exact event?
+      const alreadyProcessed = await prisma.processedOrderEvent.findUnique({
+        where: {
+          id: eventId,
+        },
+      });
+      if (alreadyProcessed) {
+        console.log(
+          `⏭️  Duplicate ORDER_CREATED event detected (eventId: ${eventId}). Skipping — already processed at ${alreadyProcessed.processedAt.toISOString()}`
+        );
+        return;
+      }
+    } else {
+      console.warn("⚠️  Event has no eventId — cannot deduplicate. Processing anyway.");
+    }
+
     console.log(`\n💳 Processing payment for order: ${orderId}`);
     console.log(`   User: ${userId}, Product: ${productId}`);
+
+    // Generated once, before any retries, so every retry of this same
+    // incoming event reuses the same outgoing eventId. Downstream
+    // consumers dedupe on this id, so a retried publish never causes
+    // double-processing further down the pipeline.
     const paymentEventId = randomUUID();
 
-    // Simulate payment processing (random success/failure - 70% success rate)
+    // Simulate payment processing (random success/failure - 70% success rate).
+    // The outcome is decided once, up front — the retries below only cover
+    // infrastructure hiccups (Kafka send / DB write), never re-roll this.
     const isSuccess = Math.random() > 0.3;
-    
+
     // Add a small delay to simulate processing
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const paymentEvent = isSuccess
+      ? {
+          type: "PAYMENT_SUCCESS",
+          eventId: paymentEventId,
+          orderId,
+          userId,
+          productId,
+          timestamp: new Date().toISOString(),
+        }
+      : {
+          type: "PAYMENT_FAILED",
+          eventId: paymentEventId,
+          orderId,
+          userId,
+          productId,
+          timestamp: new Date().toISOString(),
+          reason: "Payment declined - insufficient funds",
+        };
 
     if (isSuccess) {
       console.log(`✅ Payment Success for order: ${orderId}`);
-
-      await producer.send({
-        topic: "payment-events",
-        messages: [
-          {
-            key: orderId,
-            value: JSON.stringify({
-              type: "PAYMENT_SUCCESS",
-              eventId: paymentEventId,
-              orderId,
-              userId,
-              productId,
-              timestamp: new Date().toISOString(),
-            }),
-          },
-        ],
-      });
-      
-      console.log(`📤 Published PAYMENT_SUCCESS event to Kafka\n`);
     } else {
       console.log(`❌ Payment Failed for order: ${orderId}`);
-
-      await producer.send({
-        topic: "payment-events",
-        messages: [
-          {
-            key: orderId,
-            value: JSON.stringify({
-              type: "PAYMENT_FAILED",
-              eventId: paymentEventId,
-              orderId,
-              userId,
-              productId,
-              timestamp: new Date().toISOString(),
-              reason: "Payment declined - insufficient funds"
-            }),
-          },
-        ],
-      });
-      
-      console.log(`📤 Published PAYMENT_FAILED event to Kafka\n`);
     }
 
-    // Record that we've handled this incoming ORDER_CREATED event,
-    // so a redelivered copy won't be processed (and charged) again.
-    if(eventId){
-      await prisma.processedOrderEvent.create({
-        data: {
-          id: eventId,
-          eventType: "ORDER_CREATED",
-          orderId,
-        }
-      })
-      console.log(`📌 Marked eventId ${eventId} as processed`);
+    try {
+      await withRetry(() => publishPaymentResult(paymentEvent, eventId, orderId), {
+        retries: MAX_PUBLISH_RETRIES,
+        baseDelayMs: 300,
+        onRetry: (err, attempt, delayMs) => {
+          console.warn(
+            `🔁 [order ${orderId}] retrying ${paymentEvent.type} publish (attempt ${attempt}/${MAX_PUBLISH_RETRIES}) in ${delayMs}ms — ${
+              err instanceof Error ? err.message : err
+            }`
+          );
+        },
+      });
+
+      console.log(`📤 Published ${paymentEvent.type} event to Kafka\n`);
+    } catch (err) {
+      // Bounded: we tried MAX_PUBLISH_RETRIES times and stop here rather
+      // than retrying forever, which would stall this consumer (and every
+      // other order behind it in the partition) on one stuck event.
+      console.error(
+        `🚨 [order ${orderId}] Giving up on publishing ${paymentEvent.type} after ${MAX_PUBLISH_RETRIES} retries:`,
+        err
+      );
     }
   } catch (err) {
-    console.error("❌ Error handling payment:", err);
-    
-    // Send failure event if something goes wrong
-    try {
-      await producer.send({
-        topic: "payment-events",
-        messages: [
-          {
-            key: orderId,
-            value: JSON.stringify({
-              type: "PAYMENT_FAILED",
-              orderId,
-              userId,
-              productId,
-              timestamp: new Date().toISOString(),
-              reason: err instanceof Error ? err.message : "Unknown error"
-            }),
-          },
-        ],
-      });
-    } catch (sendErr) {
-      console.error("Failed to send payment failure event:", sendErr);
-    }
+    // Safety net for anything unexpected outside the retried block above
+    // (e.g. the idempotency check itself failing). Log and return rather
+    // than throw, so a single bad message can never crash the consumer.
+    console.error("❌ Unexpected error handling payment:", err);
   }
 };
+
+async function publishPaymentResult(
+  paymentEvent: Record<string, unknown>,
+  eventId: string | undefined,
+  orderId: string
+) {
+  await producer.send({
+    topic: "payment-events",
+    messages: [
+      {
+        key: orderId,
+        value: JSON.stringify(paymentEvent),
+      },
+    ],
+  });
+
+  if (eventId) {
+    // upsert (not create) — a retry may re-run this after a previous
+    // attempt's write already succeeded but the attempt failed afterwards.
+    await prisma.processedOrderEvent.upsert({
+      where: { id: eventId },
+      create: {
+        id: eventId,
+        eventType: "ORDER_CREATED",
+        orderId,
+      },
+      update: {},
+    });
+    console.log(`📌 Marked eventId ${eventId} as processed`);
+  }
+}
