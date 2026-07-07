@@ -1,5 +1,6 @@
 import { Kafka } from "kafkajs";
 import { prisma } from "../prisma";
+import { withRetry } from "../utils/retry";
 
 const kafka = new Kafka({
   clientId: "order-service-consumer",
@@ -7,6 +8,49 @@ const kafka = new Kafka({
 });
 
 const consumer = kafka.consumer({ groupId: "order-service-group" });
+
+const MAX_STATUS_UPDATE_RETRIES = 3;
+
+async function updateOrderStatus(
+  orderId: string,
+  status: "COMPLETED" | "FAILED",
+  eventType: string,
+  eventId: string | undefined,
+  reason?: string
+) {
+  await prisma.$transaction(async (tx) => {
+    const updatedOrder = await tx.order.update({
+      where: {
+        id: orderId,
+      },
+      data: {
+        status,
+      },
+    });
+
+    if (eventId) {
+      // upsert (not create) — a retry may re-enter this after a previous
+      // attempt's write committed but the attempt failed afterwards.
+      await tx.processedPaymentEvent.upsert({
+        where: { id: eventId },
+        create: {
+          id: eventId,
+          eventType,
+          orderId,
+        },
+        update: {},
+      });
+    }
+
+    if (status === "COMPLETED") {
+      console.log(`✅ Order ${orderId} marked as COMPLETED`);
+    } else {
+      console.log(`❌ Order ${orderId} marked as FAILED`);
+      console.log(`   Reason:`, reason || "Payment declined");
+    }
+    console.log(`   Order Details:`, updatedOrder);
+  });
+}
 
 export const startOrderConsumer = async () => {
   try {
@@ -21,80 +65,58 @@ export const startOrderConsumer = async () => {
     console.log("👂 Listening on topic: payment-events");
 
     await consumer.run({
-      eachMessage: async ({ topic, partition, message }) => {
+      eachMessage: async ({ message }) => {
         try {
           const data = JSON.parse(message.value!.toString());
           console.log("\n📥 Order Service received payment event:", data);
 
-          const eventId: string | undefined= data.eventId;
+          const eventId: string | undefined = data.eventId;
 
-          if(!eventId){
+          if (eventId) {
+            // IDEMPOTENCY CHECK: have we already processed this exact event?
+            const alreadyProcessed = await prisma.processedPaymentEvent.findUnique({
+              where: {
+                id: eventId,
+              },
+            });
+            if (alreadyProcessed) {
+              console.log(
+                `⏭️  Duplicate event detected (eventId: ${eventId}). Skipping — already processed at ${alreadyProcessed.processedAt.toISOString()}`
+              );
+              return; // ack the offset, do nothing else
+            }
+          } else {
             // Defensive: if an event somehow has no eventId, we can't
             // dedupe it. Log loudly and process it anyway rather than crash.
             console.warn("⚠️  Event has no eventId — cannot deduplicate. Processing anyway.");
-          }else{
-            // IDEMPOTENCY CHECK: have we already processed this exact event?
-            const alreadyProcessed= await prisma.processedPaymentEvent.findUnique({
-              where: {
-                id: eventId
-              }
-            })
-            if(alreadyProcessed){
-              console.log(`⏭️  Duplicate event detected (eventId: ${eventId}). Skipping — already processed at ${alreadyProcessed.processedAt.toISOString()}`);
-              return; // ack the offset, do nothing else
-            }
           }
 
-          if (data.type === "PAYMENT_SUCCESS") {
-            // Update order status to COMPLETED
-            await prisma.$transaction(async(tx)=>{
-              const updatedOrder= await tx.order.update({
-                where: {
-                  id: data.orderId
-                },
-                data: {
-                  status: "COMPLETED"
+          if (data.type === "PAYMENT_SUCCESS" || data.type === "PAYMENT_FAILED") {
+            const status = data.type === "PAYMENT_SUCCESS" ? "COMPLETED" : "FAILED";
+
+            try {
+              await withRetry(
+                () => updateOrderStatus(data.orderId, status, data.type, eventId, data.reason),
+                {
+                  retries: MAX_STATUS_UPDATE_RETRIES,
+                  baseDelayMs: 300,
+                  onRetry: (err, attempt, delayMs) => {
+                    console.warn(
+                      `🔁 [order ${data.orderId}] retrying order-status update (attempt ${attempt}/${MAX_STATUS_UPDATE_RETRIES}) in ${delayMs}ms — ${
+                        err instanceof Error ? err.message : err
+                      }`
+                    );
+                  },
                 }
-              })
-              if(eventId){
-                await tx.processedPaymentEvent.create({
-                  data: {
-                    id: eventId,
-                    eventType: data.type,
-                    orderId: data.orderId,
-                  }
-                })
-              }
-            console.log(`✅ Order ${data.orderId} marked as COMPLETED`);
-            console.log(`   Order Details:`, updatedOrder);
-            })
-          } 
-          else if (data.type === "PAYMENT_FAILED") {
-            // Update order status to FAILED
-            await prisma.$transaction(async(tx)=>{
-              const updatedOrder= await tx.order.update({
-                where: {
-                  id: data.orderId
-                },
-                data: {
-                  status: "FAILED"
-                }
-              })
-              if(eventId){
-                await tx.processedPaymentEvent.create({
-                  data: {
-                    id: eventId,
-                    eventType: data.type,
-                    orderId: data.orderId,
-                  }
-                })
-              }
-              console.log(`❌ Order ${data.orderId} marked as FAILED`);
-              console.log(`   Reason:`, data.reason || "Payment declined");
-              console.log(`   Order Details:`, updatedOrder);
-            })
-          }
-          else{
+              );
+            } catch (err) {
+              // Bounded: stop here rather than retrying forever.
+              console.error(
+                `🚨 [order ${data.orderId}] Giving up on order-status update after ${MAX_STATUS_UPDATE_RETRIES} retries:`,
+                err
+              );
+            }
+          } else {
             console.log(`⏭️  Ignored event type: ${data.type}`);
           }
         } catch (err) {
