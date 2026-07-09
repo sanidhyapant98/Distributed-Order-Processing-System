@@ -1,6 +1,7 @@
 import { Kafka } from "kafkajs";
 import { prisma } from "../prisma";
 import { withRetry } from "../utils/retry";
+import { sendToDlq } from "./dlq";
 
 const kafka = new Kafka({
   clientId: "order-service-consumer",
@@ -10,6 +11,7 @@ const kafka = new Kafka({
 const consumer = kafka.consumer({ groupId: "order-service-group" });
 
 const MAX_STATUS_UPDATE_RETRIES = 3;
+const PAYMENT_EVENTS_TOPIC = "payment-events";
 
 async function updateOrderStatus(
   orderId: string,
@@ -58,7 +60,7 @@ export const startOrderConsumer = async () => {
     console.log("📡 Order Consumer connecting to Kafka...");
 
     await consumer.subscribe({
-      topic: "payment-events",
+      topic: PAYMENT_EVENTS_TOPIC,
       fromBeginning: false,
     });
 
@@ -66,8 +68,9 @@ export const startOrderConsumer = async () => {
 
     await consumer.run({
       eachMessage: async ({ message }) => {
+        const raw = message.value?.toString();
         try {
-          const data = JSON.parse(message.value!.toString());
+          const data = JSON.parse(raw ?? "");
           console.log("\n📥 Order Service received payment event:", data);
 
           const eventId: string | undefined = data.eventId;
@@ -110,17 +113,35 @@ export const startOrderConsumer = async () => {
                 }
               );
             } catch (err) {
-              // Bounded: stop here rather than retrying forever.
+              // Bounded: stop here rather than retrying forever. Instead
+              // of just logging and losing this status update (the order
+              // would stay PENDING forever), send it to the DLQ so it can
+              // be manually reprocessed.
               console.error(
                 `🚨 [order ${data.orderId}] Giving up on order-status update after ${MAX_STATUS_UPDATE_RETRIES} retries:`,
                 err
               );
+              await sendToDlq({
+                originalTopic: PAYMENT_EVENTS_TOPIC,
+                failedAt: new Date().toISOString(),
+                error: err instanceof Error ? err.message : String(err),
+                originalPayload: data,
+                eventId,
+              });
             }
           } else {
             console.log(`⏭️  Ignored event type: ${data.type}`);
           }
         } catch (err) {
+          // Guards against things outside the block above — most commonly
+          // a malformed/unparseable ("poison") message.
           console.error("⚠️  Error processing payment event:", err);
+          await sendToDlq({
+            originalTopic: PAYMENT_EVENTS_TOPIC,
+            failedAt: new Date().toISOString(),
+            error: err instanceof Error ? err.message : String(err),
+            originalPayload: raw ?? null,
+          });
         }
       },
     });
