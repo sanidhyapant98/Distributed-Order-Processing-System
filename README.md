@@ -19,7 +19,8 @@ Kafka is used for inter-service communication. PostgreSQL is used by each servic
 - **Asynchronous communication** with Kafka topics.
 - **Transactional Outbox Pattern** in order-service to avoid lost events between DB commit and Kafka publish.
 - **Idempotent message handling** in payment-service, order-service, and inventory-service using processed-event tables.
-- **Retry strategy** in payment-service for publish reliability.
+- **Bounded retry strategy** (exponential backoff + jitter) in all services.
+- **Dead Letter Queue (DLQ)** for poison messages and exhausted retries.
 - **Graceful startup/shutdown flow** in all services.
 
 ## High-Level Flow
@@ -34,51 +35,66 @@ Kafka is used for inter-service communication. PostgreSQL is used by each servic
 ## Architecture Diagram
 
 ```mermaid
-flowchart LR
+flowchart TB
     C[Client]
 
     subgraph O[order-service]
       API[REST API\nPOST /api/orders\nGET /api/orders/:id]
-      ODB[(Order DB)]
-      OUTBOX[Order Outbox Table]
-      OP[Outbox Poller]
-      OC[Payment Events Consumer]
+      ODB[(Order DB\nOrder + Outbox\n+ ProcessedPayment)]
+      OP[Outbox Poller\n5s interval, max 5 attempts]
+      OC[Payment Events Consumer\n3 retries → DLQ]
+      ODLQ[DLQ: payment-events.dlq]
     end
 
     subgraph P[payment-service]
-      PC[Order Events Consumer]
-      PH[Payment Handler]
+      PC[Order Events Consumer\nfromBeginning: true]
+      PH[Payment Handler\n70% success, 500ms sim]
       PDB[(Payment DB\nProcessedOrderEvent)]
-      PP[Payment Events Producer]
+      PDLQ1[DLQ: order-events.dlq]
+      PDLQ2[DLQ: payment-events.dlq]
     end
 
     subgraph I[inventory-service]
-      IC[Payment Events Consumer]
-      IH[Inventory Handler]
-      IDB[(Inventory DB\nProduct + ProcessedPaymentEvent)]
+      IC[Payment Events Consumer\nPAYMENT_SUCCESS only]
+      IH[Inventory Handler\natomic decrement]
+      IDB[(Inventory DB\nProduct + ProcessedPayment)]
+      IDLQ[DLQ: payment-events.dlq]
     end
 
-    K1[(Kafka: order-events)]
-    K2[(Kafka: payment-events)]
+    subgraph K[Kafka Topics]
+      K1[(order-events)]
+      K2[(payment-events)]
+      K1DLQ[(order-events.dlq)]
+      K2DLQ[(payment-events.dlq)]
+    end
 
-    C --> API
-    API --> ODB
-    API --> OUTBOX
-    OUTBOX --> OP
-    OP --> K1
+    C -->|POST /api/orders| API
+    API -->|1. findUnique product| ODB
+    API -->|2. $transaction Order+Outbox| ODB
+    ODB -->|unpublished row| OP
+    OP -->|withRetry 2 → publish| K1
+    OP -->|exhaust 5 attempts| K1DLQ
 
-    K1 --> PC
-    PC --> PH
-    PH --> PDB
-    PH --> PP
-    PP --> K2
+    K1 -->|ORDER_CREATED| PC
+    PC -->|handlePayment| PH
+    PH -->|idempotency check| PDB
+    PH -->|withRetry 3 → publish| K2
+    PH -->|exhaust 3 retries| PDLQ2
+    PH -->|unexpected error| PDLQ1
 
-    K2 --> OC
-    OC --> ODB
+    K2 -->|payment-events| OC
+    K2 -->|PAYMENT_SUCCESS| IC
 
-    K2 --> IC
-    IC --> IH
-    IH --> IDB
+    OC -->|withRetry 3 → updateOrderStatus| ODB
+    OC -->|exhaust 3 retries| ODLQ
+    ODLQ -.->|routes to| K2DLQ
+
+    IC -->|withRetry 3 → handleInventory| IH
+    IH -->|idempotency check + atomic| IDB
+    IH -->|exhaust 3 retries| IDLQ
+    IDLQ -.->|routes to| K2DLQ
+
+    API -->|GET /api/orders/:id| ODB
 ```
 
 ## Event Topics
@@ -244,6 +260,12 @@ curl http://localhost:5000/api/orders/<ORDER_ID>
 - **Payment Publish Retry (payment-service)**
   - Max retries: 3 (bounded)
   - Backoff-based retries for transient failures
+  - Exhausted retries → routes to DLQ
+
+- **Dead Letter Queue (all services)**
+  - Poison/unparseable messages → `<topic>.dlq`
+  - Exhausted retries → `<topic>.dlq`
+  - DLQ messages include metadata: originalTopic, failedAt, error, originalPayload
 
 - **Idempotency**
   - payment-service dedupes ORDER_CREATED by eventId
@@ -286,6 +308,6 @@ This project is licensed under **AGPL-3.0-only**.
 ## Future Improvements
 
 - Add health check endpoints and metrics.
-- Add dead-letter topic and poison-message handling.
 - Add integration tests with testcontainers.
 - Add CI pipeline for lint, test, build, and migration checks.
+- Add outbox DLQ consumer/replay mechanism (manual DLQ → topic replay).
