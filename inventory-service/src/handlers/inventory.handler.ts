@@ -1,7 +1,9 @@
 import { prisma } from "../prisma";
 import { withRetry } from "@/utils/retry";
+import { sendToDlq } from "../kafka/dlq";
 
-const MAX_UPDATE_RETRIES= 3;
+const MAX_UPDATE_RETRIES = 3;
+const PAYMENT_EVENTS_TOPIC = "payment-events";
 
 export const handleInventory = async (event: any) => {
   const { orderId, productId, eventId } = event;
@@ -39,14 +41,30 @@ export const handleInventory = async (event: any) => {
         }
       })
     }catch(err){
-      // Bounded: stop here rather than retrying forever.
+      // Bounded: stop here rather than retrying forever. Instead of just
+      // logging and losing this stock update (the decrement would never
+      // happen), send it to the DLQ so it can be manually reprocessed.
       console.error(
         `🚨 [order ${orderId}] Giving up on inventory update after ${MAX_UPDATE_RETRIES} retries:`,
         err
       );
+      await sendToDlq({
+        originalTopic: PAYMENT_EVENTS_TOPIC,
+        failedAt: new Date().toISOString(),
+        error: err instanceof Error ? err.message : String(err),
+        originalPayload: event,
+        eventId,
+      });
     }
   }catch(err){
     console.error("❌ Unexpected error updating inventory:", err);
+    await sendToDlq({
+      originalTopic: PAYMENT_EVENTS_TOPIC,
+      failedAt: new Date().toISOString(),
+      error: err instanceof Error ? err.message : String(err),
+      originalPayload: event,
+      eventId,
+    });
   }
 };
 

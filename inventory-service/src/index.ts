@@ -3,11 +3,15 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+import { connectProducer } from "./kafka/producer";
 import { startConsumer } from "./kafka/consumer";
 
 const start = async () => {
   try {
     console.log("🚀 Starting Inventory Service...");
+
+    await connectProducer();
+    console.log("✅ Inventory Service Producer connected to Kafka");
 
     await startConsumer();
 

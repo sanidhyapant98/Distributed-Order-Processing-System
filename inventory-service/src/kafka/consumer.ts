@@ -1,7 +1,6 @@
-// src/kafka/consumer.ts
-
 import { Kafka } from "kafkajs";
 import { handleInventory } from "../handlers/inventory.handler";
+import { sendToDlq } from "./dlq";
 
 const kafka = new Kafka({
   clientId: "inventory-service",
@@ -10,21 +9,24 @@ const kafka = new Kafka({
 
 const consumer = kafka.consumer({ groupId: "inventory-group" });
 
+const PAYMENT_EVENTS_TOPIC = "payment-events";
+
 export const startConsumer = async () => {
   await consumer.connect();
   console.log("📡 Inventory Consumer connected to Kafka");
 
   await consumer.subscribe({
-    topic: "payment-events",
+    topic: PAYMENT_EVENTS_TOPIC,
     fromBeginning: false,
   });
-  
+
   console.log("👂 Listening on topic: payment-events");
 
   await consumer.run({
     eachMessage: async ({ message }) => {
+      const raw = message.value?.toString();
       try {
-        const data = JSON.parse(message.value!.toString());
+        const data = JSON.parse(raw ?? "");
 
         console.log("\n📥 Inventory Service received event:", data);
 
@@ -35,7 +37,16 @@ export const startConsumer = async () => {
         }
 
       } catch (err) {
+        // handleInventory already routes its own failures to the DLQ.
+        // This catch only guards against things outside it — most
+        // commonly a malformed/unparseable ("poison") message.
         console.error("⚠️ Error processing message:", err);
+        await sendToDlq({
+          originalTopic: PAYMENT_EVENTS_TOPIC,
+          failedAt: new Date().toISOString(),
+          error: err instanceof Error ? err.message : String(err),
+          originalPayload: raw ?? null,
+        });
       }
     },
   });
