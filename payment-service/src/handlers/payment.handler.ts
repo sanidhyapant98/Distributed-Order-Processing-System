@@ -2,8 +2,10 @@ import { prisma } from "../prisma";
 import { producer } from "../kafka/producer";
 import { randomUUID } from "node:crypto";
 import { withRetry } from "../utils/retry";
+import { sendToDlq } from "../kafka/dlq";
 
 const MAX_PUBLISH_RETRIES = 3;
+const ORDER_EVENTS_TOPIC = "order-events";
 
 export const handlePayment = async (event: any) => {
   const { orderId, userId, productId, eventId } = event;
@@ -83,19 +85,35 @@ export const handlePayment = async (event: any) => {
 
       console.log(`📤 Published ${paymentEvent.type} event to Kafka\n`);
     } catch (err) {
-      // Bounded: we tried MAX_PUBLISH_RETRIES times and stop here rather
-      // than retrying forever, which would stall this consumer (and every
-      // other order behind it in the partition) on one stuck event.
+      // Bounded: we tried MAX_PUBLISH_RETRIES times. Instead of just
+      // logging and losing this payment result forever (the order would
+      // sit as PENDING with no outcome), send it to the DLQ so it can be
+      // manually republished later.
       console.error(
         `🚨 [order ${orderId}] Giving up on publishing ${paymentEvent.type} after ${MAX_PUBLISH_RETRIES} retries:`,
         err
       );
+      await sendToDlq({
+        originalTopic: "payment-events",
+        failedAt: new Date().toISOString(),
+        error: err instanceof Error ? err.message : String(err),
+        originalPayload: paymentEvent,
+        eventId: paymentEventId,
+      });
     }
   } catch (err) {
     // Safety net for anything unexpected outside the retried block above
-    // (e.g. the idempotency check itself failing). Log and return rather
-    // than throw, so a single bad message can never crash the consumer.
+    // (e.g. the idempotency check itself failing). This is a message we
+    // received but could not process at all, so it goes to the DLQ
+    // rather than being silently dropped.
     console.error("❌ Unexpected error handling payment:", err);
+    await sendToDlq({
+      originalTopic: ORDER_EVENTS_TOPIC,
+      failedAt: new Date().toISOString(),
+      error: err instanceof Error ? err.message : String(err),
+      originalPayload: event,
+      eventId,
+    });
   }
 };
 
