@@ -1,6 +1,6 @@
 import { Kafka } from "kafkajs";
-import { handlePayment } from "../handlers/payment.handler";
-import { sendToDlq } from "./dlq";
+import { handlePayment } from "../handlers/payment.handler.js";
+import { sendToDlq } from "./dlq.js";
 
 const kafka = new Kafka({
   clientId: "payment-service",

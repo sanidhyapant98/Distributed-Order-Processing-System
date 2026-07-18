@@ -1,6 +1,6 @@
 import { Kafka } from "kafkajs";
-import { handleInventory } from "../handlers/inventory.handler";
-import { sendToDlq } from "./dlq";
+import { handleInventory } from "../handlers/inventory.handler.js";
+import { sendToDlq } from "./dlq.js";
 
 const kafka = new Kafka({
   clientId: "inventory-service",

@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
-import { connectProducer } from "./kafka/producer";
-import { startConsumer } from "./kafka/consumer";
+import { connectProducer } from "./kafka/producer.js";
+import { startConsumer } from "./kafka/consumer.js";
 
 const start = async () => {
   try {

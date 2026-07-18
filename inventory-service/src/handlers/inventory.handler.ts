@@ -1,6 +1,6 @@
-import { prisma } from "../prisma";
-import { withRetry } from "@/utils/retry";
-import { sendToDlq } from "../kafka/dlq";
+import { prisma } from "../prisma.js";
+import { withRetry } from "../utils/retry.js";
+import { sendToDlq } from "../kafka/dlq.js";
 
 const MAX_UPDATE_RETRIES = 3;
 const PAYMENT_EVENTS_TOPIC = "payment-events";

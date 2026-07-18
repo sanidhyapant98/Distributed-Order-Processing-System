@@ -1,7 +1,7 @@
 import { Kafka } from "kafkajs";
-import { prisma } from "../prisma";
-import { withRetry } from "../utils/retry";
-import { sendToDlq } from "./dlq";
+import { prisma } from "../prisma.js";
+import { withRetry } from "../utils/retry.js";
+import { sendToDlq } from "./dlq.js";
 
 const kafka = new Kafka({
   clientId: "order-service-consumer",

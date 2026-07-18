@@ -1,6 +1,6 @@
-import { prisma } from "@/prisma";
-import { producer } from "./producer";
-import { withRetry } from "../utils/retry";
+import { prisma } from "../prisma.js";
+import { producer } from "./producer.js";
+import { withRetry } from "../utils/retry.js";
 
 const POLL_INTERVAL_MS = 5000;
 const MAX_ATTEMPTS = 5;

@@ -1,4 +1,4 @@
-import { producer } from "./producer";
+import { producer } from "./producer.js";
 
 /**
  * Dead Letter Queue helper.

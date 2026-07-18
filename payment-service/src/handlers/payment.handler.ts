@@ -1,8 +1,8 @@
-import { prisma } from "../prisma";
-import { producer } from "../kafka/producer";
+import { prisma } from "../prisma.js";
+import { producer } from "../kafka/producer.js";
 import { randomUUID } from "node:crypto";
-import { withRetry } from "../utils/retry";
-import { sendToDlq } from "../kafka/dlq";
+import { withRetry } from "../utils/retry.js";
+import { sendToDlq } from "../kafka/dlq.js";
 
 const MAX_PUBLISH_RETRIES = 3;
 const ORDER_EVENTS_TOPIC = "order-events";

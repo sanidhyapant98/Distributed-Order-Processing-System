@@ -158,15 +158,23 @@ Create a `.env` file in each service directory.
 
 ## Local Setup
 
-### 1. Start Kafka and Zookeeper
+### 2. Start Postgres, Kafka, and Zookeeper
 
 From repository root:
 
 ```bash
-docker compose up -d
+docker compose up -d postgres zookeeper kafka
 ```
 
-### 2. Install dependencies
+This starts one local Postgres container with three databases:
+
+- `order_db`
+- `payment_db`
+- `inventory_db`
+
+When running the services directly on your machine, the `.env` files point to `localhost:5432`. When running through Docker Compose, the service containers use the internal `postgres` host name from `docker-compose.yml`.
+
+### 3. Install dependencies
 
 Install for each service:
 

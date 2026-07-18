@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { prisma } from "../prisma";
+import { prisma } from "../prisma.js";
 import { randomUUID } from "node:crypto";
 
 export const createOrder = async (req: Request, res: Response) => {

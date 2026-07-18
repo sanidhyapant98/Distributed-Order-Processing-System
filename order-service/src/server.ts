@@ -1,8 +1,8 @@
 import 'dotenv/config';
-import app from "./app";
-import { connectProducer } from "./kafka/producer";
-import { startOrderConsumer } from "./kafka/consumer";
-import { startOutboxPoller, stopOutboxPoller } from './kafka/outbox-poller';
+import app from "./app.js";
+import { connectProducer } from "./kafka/producer.js";
+import { startOrderConsumer } from "./kafka/consumer.js";
+import { startOutboxPoller, stopOutboxPoller } from './kafka/outbox-poller.js';
 
 const PORT = process.env.PORT || 5000;
 
