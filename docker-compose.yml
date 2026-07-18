@@ -24,6 +24,12 @@ services:
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
     container_name: kafka
     ports:
       - "9092:9092"
@@ -48,9 +54,11 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/inventory_db?schema=public
       KAFKA_BROKER: kafka:29092
     depends_on:
-      - postgres
-      - kafka
-    restart: no
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    restart: on-failure
 
   order-service:
     build:
@@ -64,9 +72,11 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/order_db?schema=public
       KAFKA_BROKER: kafka:29092
     depends_on:
-      - postgres
-      - kafka
-    restart: no
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    restart: on-failure
 
   payment-service:
     build:
@@ -78,9 +88,11 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/payment_db?schema=public
       KAFKA_BROKER: kafka:29092
     depends_on:
-      - postgres
-      - kafka
-    restart: no
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+    restart: on-failure
 
 volumes:
   postgres-data:
